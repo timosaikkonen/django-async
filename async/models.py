@@ -2,7 +2,7 @@
     Django Async models.
 """
 from datetime import  timedelta
-from django.db import models, transaction
+from django.db import models
 from django.db.models import Count, Q
 try:
     # No name 'timezone' in module 'django.utils'
@@ -20,6 +20,24 @@ from async.logger import _logger
 from async.utils import object_at_end_of_path, non_unicode_kwarg_keys
 
 from django.core.exceptions import ValidationError
+
+try:
+    from django.db.transaction import (Atomic, TransactionManagementError,
+                                       get_connection)
+except ImportError:
+    from django.db.transaction import commit_on_success
+else:
+    class DurableAtomic(Atomic):
+        def __enter__(self):
+            if get_connection(self.using).in_atomic_block:
+                raise TransactionManagementError(
+                    "Cannot use DurableAtomic inside Atomic")
+            super(DurableAtomic, self).__enter__()
+
+    def commit_on_success(using=None):
+        if callable(using):
+            return DurableAtomic(None, False)(using)
+        return DurableAtomic(using, False)
 
 
 class Group(models.Model):
@@ -190,7 +208,7 @@ class Job(models.Model):
                 self.result = dumps(result)
                 self.save()
                 return result
-            return transaction.commit_on_success(execute)()
+            return commit_on_success(execute)()
         except Exception, exception:
             self.started = None
             errors = 1 + self.errors.count()
@@ -208,7 +226,7 @@ class Job(models.Model):
                 Error.objects.create(job=self, exception=repr(exception),
                     traceback=format_exc())
                 self.save()
-            transaction.commit_on_success(record)()
+            commit_on_success(record)()
             raise
 
 
